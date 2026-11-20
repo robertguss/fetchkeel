@@ -178,7 +178,10 @@ fn resolve_output_dest(stream: &StreamConfig, opts: &RunOptions) -> String {
         return o.clone();
     }
     if let Some(ref dir) = opts.output_dir {
-        return dir.join(format!("{}.jsonl", stream.name)).display().to_string();
+        return dir
+            .join(format!("{}.jsonl", stream.name))
+            .display()
+            .to_string();
     }
     format!("{}.jsonl", stream.name)
 }
@@ -186,12 +189,11 @@ fn resolve_output_dest(stream: &StreamConfig, opts: &RunOptions) -> String {
 fn build_client(source: &SourceConfig) -> Result<Client> {
     let mut default_headers = HeaderMap::new();
     for (k, v) in &source.headers {
-        let name = HeaderName::from_bytes(k.as_bytes()).map_err(|e| {
-            FetchKeelError::ConfigParse {
+        let name =
+            HeaderName::from_bytes(k.as_bytes()).map_err(|e| FetchKeelError::ConfigParse {
                 path: source.name.clone(),
                 detail: format!("invalid header name '{k}': {e}"),
-            }
-        })?;
+            })?;
         let val = HeaderValue::from_str(v).map_err(|e| FetchKeelError::ConfigParse {
             path: source.name.clone(),
             detail: format!("invalid header value for '{k}': {e}"),
@@ -239,8 +241,10 @@ fn build_initial_url(
         }
         match stream.pagination {
             PaginationKind::PageNumber => {
-                qp.append_pair(&stream.page_param, "1");
-                qp.append_pair(&stream.per_page_param, &stream.per_page.to_string());
+                if !stream.page_in_body {
+                    qp.append_pair(&stream.page_param, "1");
+                    qp.append_pair(&stream.per_page_param, &stream.per_page.to_string());
+                }
             }
             PaginationKind::Offset => {
                 qp.append_pair(&stream.offset_param, "0");
@@ -305,8 +309,9 @@ pub async fn fetch_stream(
             break;
         }
 
+        let req_body = build_request_body(stream, page_num);
         let (headers, body, retries) =
-            send_with_retry(client, source, &current_url, auth_secret).await?;
+            send_with_retry(client, source, &current_url, auth_secret, req_body.as_ref()).await?;
         total_retries += retries;
         pages_fetched += 1;
 
@@ -316,7 +321,9 @@ pub async fn fetch_stream(
         for rec in &records {
             if let Some(ref wm_field) = stream.watermark_field
                 && let Some(wm_val) = extract_scalar_at_path(rec, wm_field)
-                && max_watermark.as_deref().is_none_or(|prev| wm_val.as_str() > prev)
+                && max_watermark
+                    .as_deref()
+                    .is_none_or(|prev| wm_val.as_str() > prev)
             {
                 max_watermark = Some(wm_val);
             }
@@ -337,7 +344,12 @@ pub async fn fetch_stream(
         }
 
         // Compute next page URL according to pagination strategy
-        let next_url: Option<String> = match stream.pagination {
+        let has_more_override = stream
+            .has_more_path
+            .as_deref()
+            .and_then(|p| extract_bool_at_path(&body, p));
+
+        let next_step: Option<String> = match stream.pagination {
             PaginationKind::None => None,
             PaginationKind::LinkHeader => headers
                 .get_all(LINK)
@@ -345,15 +357,23 @@ pub async fn fetch_stream(
                 .filter_map(|hv| hv.to_str().ok())
                 .find_map(parse_link_next),
             PaginationKind::PageNumber => {
-                if page_count == 0 || page_count < stream.per_page {
+                let should_continue = match has_more_override {
+                    Some(more) => more,
+                    None => page_count > 0 && page_count >= stream.per_page,
+                };
+                if !should_continue {
                     None
                 } else {
                     page_num += 1;
-                    Some(set_query_param(
-                        &current_url,
-                        &stream.page_param,
-                        &page_num.to_string(),
-                    )?)
+                    if stream.page_in_body {
+                        Some(current_url.clone())
+                    } else {
+                        Some(set_query_param(
+                            &current_url,
+                            &stream.page_param,
+                            &page_num.to_string(),
+                        )?)
+                    }
                 }
             }
             PaginationKind::Offset => {
@@ -377,8 +397,8 @@ pub async fn fetch_stream(
             }
         };
 
-        match next_url {
-            Some(next) if next != current_url => current_url = next,
+        match next_step {
+            Some(next) if stream.page_in_body || next != current_url => current_url = next,
             _ => break,
         }
     }
@@ -402,11 +422,34 @@ pub async fn fetch_stream(
     })
 }
 
+fn build_request_body(stream: &StreamConfig, page_num: usize) -> Option<JsonValue> {
+    if !stream.page_in_body && stream.body.is_none() {
+        return None;
+    }
+    let mut map = match &stream.body {
+        Some(JsonValue::Object(m)) => m.clone(),
+        _ => serde_json::Map::new(),
+    };
+    if stream.page_in_body && stream.pagination == PaginationKind::PageNumber {
+        map.insert(stream.page_param.clone(), JsonValue::from(page_num));
+    }
+    Some(JsonValue::Object(map))
+}
+
+fn extract_bool_at_path(root: &JsonValue, dot_path: &str) -> Option<bool> {
+    let mut cur = root;
+    for seg in dot_path.split('.') {
+        cur = cur.get(seg)?;
+    }
+    cur.as_bool()
+}
+
 async fn send_with_retry(
     client: &Client,
     source: &SourceConfig,
     url: &str,
     auth_secret: Option<&str>,
+    req_body: Option<&JsonValue>,
 ) -> Result<(HeaderMap, JsonValue, u32)> {
     let mut attempt: u32 = 0;
 
@@ -438,6 +481,9 @@ async fn send_with_retry(
                 }
             }
         }
+        if let Some(payload) = req_body {
+            req = req.json(payload);
+        }
 
         let resp_res = req.send().await;
         match resp_res {
@@ -446,10 +492,13 @@ async fn send_with_retry(
                 let headers = resp.headers().clone();
 
                 if status.is_success() {
-                    let text = resp.text().await.map_err(|e| FetchKeelError::HttpTransport {
-                        url: url.to_string(),
-                        detail: e.to_string(),
-                    })?;
+                    let text = resp
+                        .text()
+                        .await
+                        .map_err(|e| FetchKeelError::HttpTransport {
+                            url: url.to_string(),
+                            detail: e.to_string(),
+                        })?;
                     let json: JsonValue =
                         serde_json::from_str(&text).map_err(|e| FetchKeelError::JsonParse {
                             url: url.to_string(),
@@ -458,8 +507,8 @@ async fn send_with_retry(
                     return Ok((headers, json, attempt));
                 }
 
-                let retryable_status = status == StatusCode::TOO_MANY_REQUESTS
-                    || status.is_server_error();
+                let retryable_status =
+                    status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
                 if retryable_status && attempt < source.max_retries {
                     let delay = compute_retry_delay(&headers, source.base_backoff_ms, attempt);
                     attempt += 1;
@@ -477,7 +526,8 @@ async fn send_with_retry(
             }
             Err(err) => {
                 if attempt < source.max_retries {
-                    let delay = compute_retry_delay(&HeaderMap::new(), source.base_backoff_ms, attempt);
+                    let delay =
+                        compute_retry_delay(&HeaderMap::new(), source.base_backoff_ms, attempt);
                     attempt += 1;
                     tokio::time::sleep(delay).await;
                     continue;
@@ -589,7 +639,9 @@ pub fn parse_link_next(header: &str) -> Option<String> {
 
     for part in parts {
         let trimmed = part.trim();
-        let Some(lt) = trimmed.find('<') else { continue };
+        let Some(lt) = trimmed.find('<') else {
+            continue;
+        };
         let Some(gt) = trimmed[lt + 1..].find('>') else {
             continue;
         };
@@ -623,7 +675,9 @@ mod tests {
         let hdr = r#"<https://school.instructure.com/api/v1/courses?page=1&per_page=100>; rel="current", <https://school.instructure.com/api/v1/courses?page=bookmark:WzEsMTAwXQ&per_page=100>; rel="next", <https://school.instructure.com/api/v1/courses?page=last&per_page=100>; rel="last""#;
         assert_eq!(
             parse_link_next(hdr).as_deref(),
-            Some("https://school.instructure.com/api/v1/courses?page=bookmark:WzEsMTAwXQ&per_page=100")
+            Some(
+                "https://school.instructure.com/api/v1/courses?page=bookmark:WzEsMTAwXQ&per_page=100"
+            )
         );
         assert_eq!(
             parse_link_next(r#"<https://example.com/p2>; rel="prev""#),

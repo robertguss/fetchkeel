@@ -170,7 +170,10 @@ pub fn emit_skill_installed(
             } else {
                 "[INSTALLED]".to_string()
             };
-            println!("{badge} Agent skill written to {}", installed_path.display());
+            println!(
+                "{badge} Agent skill written to {}",
+                installed_path.display()
+            );
             Ok(())
         }
         ResolvedFormat::Agent | ResolvedFormat::Json => {

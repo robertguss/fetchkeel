@@ -218,7 +218,13 @@ path = "/api2/students"
 
     let stderr = fetchkeel()
         .env_remove("MISSING_POPULI_KEY_XYZ")
-        .args(["run", manifest.to_str().unwrap(), "--dry-run", "--format", "agent"])
+        .args([
+            "run",
+            manifest.to_str().unwrap(),
+            "--dry-run",
+            "--format",
+            "agent",
+        ])
         .assert()
         .code(2)
         .get_output()

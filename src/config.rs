@@ -104,6 +104,13 @@ pub struct StreamConfig {
     pub offset_param: String,
     #[serde(default = "default_limit_param")]
     pub limit_param: String,
+    /// Dot-separated path to boolean continuation flag in response (e.g. "has_more")
+    pub has_more_path: Option<String>,
+    /// When true, send page number inside the JSON request body (e.g. Populi API v2) instead of query string
+    #[serde(default)]
+    pub page_in_body: bool,
+    /// Optional static JSON body merged into every request (e.g. Populi API v2 filters/expand)
+    pub body: Option<serde_json::Value>,
     /// Field on each record used to track incremental watermark (e.g. "updated_at")
     pub watermark_field: Option<String>,
     /// Query parameter used to pass the saved watermark (e.g. "updated_since")
@@ -163,7 +170,9 @@ impl Manifest {
             _ => {
                 return Err(FetchKeelError::ConfigParse {
                     path: src,
-                    detail: format!("unsupported manifest extension '.{ext}' (expected .toml, .yaml, or .yml)"),
+                    detail: format!(
+                        "unsupported manifest extension '.{ext}' (expected .toml, .yaml, or .yml)"
+                    ),
                 });
             }
         };
