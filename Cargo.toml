@@ -1,0 +1,31 @@
+[package]
+name = "fetchkeel"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Blazing-fast, agent-first (DX + AX) Rust declarative REST API extractor with Link/cursor/page pagination, rate-limit backoff, and incremental watermarks."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/robertguss/fetchkeel"
+homepage = "https://github.com/robertguss/fetchkeel"
+keywords = ["etl", "rest-api", "pagination", "jsonl", "cli"]
+categories = ["command-line-utilities", "development-tools", "web-programming"]
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.6", features = ["derive", "env"] }
+indexmap = { version = "2.14", features = ["serde"] }
+owo-colors = { version = "4.4", features = ["supports-colors"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "gzip", "brotli", "deflate", "query"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml_ng = "0.10"
+thiserror = "2.0"
+tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "time"] }
+toml = "1.2"
+url = "2.5"
+
+[dev-dependencies]
+assert_cmd = "2.2"
+predicates = "3.1"
+tempfile = "3.27"
+wiremock = "0.6"

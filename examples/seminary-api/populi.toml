@@ -1,0 +1,17 @@
+# Example Populi SIS API manifest (cursor / page pagination + incremental watermark)
+[source]
+name = "populi"
+base_url_env = "POPULI_BASE_URL"
+auth = "bearer"
+auth_env = "POPULI_API_KEY"
+max_retries = 4
+
+[[streams]]
+name = "students"
+path = "/api2/students"
+data_path = "data"
+pagination = "page_number"
+per_page = 100
+watermark_field = "updated_at"
+watermark_param = "updated_since"
+output = "staging/populi_students.jsonl"

@@ -1,0 +1,20 @@
+# Example Canvas LMS REST API manifest (uses RFC 5988 Link header pagination)
+[source]
+name = "canvas"
+base_url_env = "CANVAS_BASE_URL"
+auth = "bearer"
+auth_env = "CANVAS_API_TOKEN"
+max_retries = 5
+rate_limit_min_remaining = 50.0
+rate_limit_delay_ms = 500
+
+[[streams]]
+name = "courses"
+path = "/api/v1/courses"
+pagination = "link_header"
+per_page = 100
+watermark_field = "updated_at"
+output = "staging/canvas_courses.jsonl"
+
+[streams.params]
+enrollment_state = "active"
